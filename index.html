@@ -506,6 +506,33 @@ a:focus-visible, button:focus-visible, [tabindex]:focus-visible{
 }
 
 .mensaje-error[hidden]{ display:none; }
+
+.aviso-lento{
+  background:var(--azul-claro-10);
+  border-radius:12px;
+  padding:16px 18px;
+  margin-top:18px;
+  text-align:left;
+}
+
+.aviso-lento[hidden]{ display:none; }
+
+.aviso-lento-texto{
+  color:var(--azul-oscuro);
+  font-weight:600;
+  font-size:14px;
+  margin:0 0 14px;
+  line-height:1.5;
+}
+
+.aviso-lento .zona-boton{
+  justify-content:flex-start;
+}
+
+.aviso-lento .btn{
+  padding:12px 22px;
+  font-size:14px;
+}
 </style>
 </head>
 <body>
@@ -547,6 +574,17 @@ a:focus-visible, button:focus-visible, [tabindex]:focus-visible{
           <span aria-hidden="true">⚠️</span>
           <span id="mensaje-error-texto">No se pudo registrar tu participación. Intenta nuevamente.</span>
         </p>
+
+        <div class="aviso-lento" id="aviso-lento" role="status" hidden>
+          <p class="aviso-lento-texto">
+            <span aria-hidden="true">⏳</span>
+            El registro está tardando más de lo normal. Es probable que ya se haya guardado, pero la confirmación no ha llegado todavía.
+          </p>
+          <div class="zona-boton">
+            <button type="button" class="btn btn-secundario" id="btn-reintentar">Reintentar</button>
+            <button type="button" class="btn btn-primario" id="btn-continuar-sin-confirmar">Continuar de todas formas</button>
+          </div>
+        </div>
       </form>
     </div>
   </section>
@@ -809,6 +847,9 @@ const listaTiendasDatalist  = document.getElementById("lista-tiendas");
 const btnContinuar          = document.getElementById("btn-continuar");
 const mensajeError          = document.getElementById("mensaje-error");
 const mensajeErrorTexto     = document.getElementById("mensaje-error-texto");
+const avisoLento            = document.getElementById("aviso-lento");
+const btnReintentar         = document.getElementById("btn-reintentar");
+const btnContinuarSinConfirmar = document.getElementById("btn-continuar-sin-confirmar");
 
 /* =========================================================
    CARGA DE TIENDAS DESDE GOOGLE SHEETS
@@ -855,26 +896,42 @@ function ocultarErrorRegistro(){
   mensajeError.hidden = true;
 }
 
+function ocultarAvisoLento(){
+  avisoLento.hidden = true;
+}
+
+/* Tiempo máximo de espera por la confirmación del servidor antes
+   de avisarle al usuario que puede tardar más de lo normal. */
+const TIEMPO_MAXIMO_ESPERA_MS = 12000;
+
 async function registrarParticipacion(tienda){
-  const respuesta = await fetch(CONFIG_REGISTRO.urlAppsScript, {
-    method:"POST",
-    headers:{ "Content-Type":"text/plain;charset=utf-8" }, // evita preflight con Apps Script
-    body: JSON.stringify({ tienda })
-  });
+  const controlador = new AbortController();
+  const temporizador = setTimeout(()=> controlador.abort(), TIEMPO_MAXIMO_ESPERA_MS);
 
-  if (!respuesta.ok){
-    throw new Error("Respuesta no válida del servidor de registro.");
-  }
+  try{
+    const respuesta = await fetch(CONFIG_REGISTRO.urlAppsScript, {
+      method:"POST",
+      headers:{ "Content-Type":"text/plain;charset=utf-8" }, // evita preflight con Apps Script
+      body: JSON.stringify({ tienda }),
+      signal: controlador.signal
+    });
 
-  const datos = await respuesta.json();
-  if (!datos || datos.ok !== true){
-    throw new Error((datos && datos.error) || "El registro no pudo completarse.");
+    if (!respuesta.ok){
+      throw new Error("Respuesta no válida del servidor de registro.");
+    }
+
+    const datos = await respuesta.json();
+    if (!datos || datos.ok !== true){
+      throw new Error((datos && datos.error) || "El registro no pudo completarse.");
+    }
+    return datos;
+  } finally {
+    clearTimeout(temporizador);
   }
-  return datos;
 }
 
 async function manejarEnvioRegistro(evento){
-  evento.preventDefault();
+  if (evento) evento.preventDefault();
 
   if (estadoRegistro.enviando || estadoRegistro.registrado) return;
 
@@ -890,9 +947,10 @@ async function manejarEnvioRegistro(evento){
   }
 
   ocultarErrorRegistro();
+  ocultarAvisoLento();
   estadoRegistro.enviando = true;
   btnContinuar.disabled = true;
-  const textoOriginalBoton = btnContinuar.textContent;
+  const textoOriginalBoton = "Continuar";
   btnContinuar.textContent = "Registrando...";
 
   try{
@@ -901,10 +959,17 @@ async function manejarEnvioRegistro(evento){
     mostrarPantallaRuleta();
   }catch(err){
     console.error("Error al registrar participación:", err);
-    mostrarErrorRegistro("No se pudo registrar tu participación. Verifica tu conexión e intenta nuevamente.");
     estadoRegistro.enviando = false;
     btnContinuar.disabled = false;
     btnContinuar.textContent = textoOriginalBoton;
+
+    if (err.name === "AbortError"){
+      /* No hubo respuesta a tiempo, pero el registro puede haberse
+         guardado igual del lado del servidor (ver explicación en el aviso). */
+      avisoLento.hidden = false;
+    } else {
+      mostrarErrorRegistro("No se pudo registrar tu participación. Verifica tu conexión e intenta nuevamente.");
+    }
   }
 }
 
@@ -916,6 +981,18 @@ function mostrarPantallaRuleta(){
 
 formularioRegistro.addEventListener("submit", manejarEnvioRegistro);
 inputTienda.addEventListener("input", validarCampoTienda);
+
+btnReintentar.addEventListener("click", ()=>{
+  ocultarAvisoLento();
+  manejarEnvioRegistro(null);
+});
+
+btnContinuarSinConfirmar.addEventListener("click", ()=>{
+  ocultarAvisoLento();
+  estadoRegistro.registrado = true;
+  mostrarPantallaRuleta();
+});
+
 cargarTiendas();
 
 /* =========================================================
